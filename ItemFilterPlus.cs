@@ -667,9 +667,20 @@ public static class ItemHighlightManager
     {
         if (!__instance.isPC || itemsToWatchForHighlight.Count == 0) return;
         var newlyVisibleItems = new List<Thing>();
+        var staleItems = new List<Thing>();
         foreach (var thing in itemsToWatchForHighlight)
         {
-            if (thing != null && !thing.isDestroyed && thing.pos.cell.isSeen) newlyVisibleItems.Add(thing);
+            Cell cell;
+            if (!TryGetHighlightCell(thing, out cell))
+            {
+                staleItems.Add(thing);
+                continue;
+            }
+            if (cell.isSeen) newlyVisibleItems.Add(thing);
+        }
+        foreach (var thing in staleItems)
+        {
+            itemsToWatchForHighlight.Remove(thing);
         }
         if (newlyVisibleItems.Count > 0)
         {
@@ -698,7 +709,9 @@ public static class ItemHighlightManager
         string filterString = EMono.player?.dataPick?.filter;
         if (ItemFilterLogic.IsEnabled && ItemFilterLogic.HighlightEnabled && !string.IsNullOrEmpty(filterString) && ItemFilterLogic.IsItemWhitelistedForWorld(thing, filterString))
         {
-            if (thing.pos.cell.isSeen) AddHighlightAndSound(thing);
+            Cell cell;
+            if (!TryGetHighlightCell(thing, out cell)) return;
+            if (cell.isSeen) AddHighlightAndSound(thing);
             else itemsToWatchForHighlight.Add(thing);
         }
     }
@@ -706,6 +719,12 @@ public static class ItemHighlightManager
     private static void AddHighlightAndSound(Thing thing)
     {
         if (highlightEffects.ContainsKey(thing)) return;
+        Cell cell;
+        if (!TryGetHighlightCell(thing, out cell))
+        {
+            itemsToWatchForHighlight.Remove(thing);
+            return;
+        }
         Effect highlight = Effect.Get(ItemFilterLogic.HighlightEffectName);
         if (highlight != null)
         {
@@ -735,6 +754,21 @@ public static class ItemHighlightManager
             }
             alreadyPlayedSoundForUIDs.Add(thing.uid);
         }
+    }
+
+    private static bool TryGetHighlightCell(Thing thing, out Cell cell)
+    {
+        cell = null;
+        if (thing == null || thing.isDestroyed || thing.pos == null || !thing.ExistsOnMap) return false;
+        if (EClass._map?.cells == null) return false;
+
+        int x = thing.pos.x;
+        int z = thing.pos.z;
+        Cell[,] cells = EClass._map.cells;
+        if (x < 0 || z < 0 || x >= cells.GetLength(0) || z >= cells.GetLength(1)) return false;
+
+        cell = cells[x, z];
+        return cell != null;
     }
 
     private static void ClearAll()
@@ -886,7 +920,9 @@ public static class FilterSubmenuPatch
     [HarmonyPatch(typeof(InvOwner), nameof(InvOwner.ListInteractions), new Type[] { typeof(ButtonGrid), typeof(bool) })]
     public static void AddFilterSubmenuButton(ref InvOwner.ListInteraction __result, ButtonGrid b, bool context)
     {
-        if (!context || __result == null || b?.card is not Thing thing) return;
+        if (!context || __result == null) return;
+        Thing thing = b?.card as Thing;
+        if (thing == null) return;
         __result.Add(ItemFilterPlusTranslations.Get("Autopickup Filter"), 1000, () =>
         {
             Vector2 clickPosition = EInput.uiMousePosition;
@@ -1758,7 +1794,7 @@ public static class FilterManagerWindow
             .SetHeader(ItemFilterPlusTranslations.Get("filter_menu_category"))
             .SetSize(400f, 500f);
             
-        var superCategoryList = new List<(string name, string description, Action action)>();
+        var superCategoryList = new List<Tuple<string, string, Action>>();
         
         foreach (var superCat in superCategories)
         {
@@ -1767,9 +1803,9 @@ public static class FilterManagerWindow
             
             if (subCategories.Count > 0)
             {
-                superCategoryList.Add((localizedSuperCatName, $"{subCategories.Count} items", () => {
+                superCategoryList.Add(Tuple.Create(localizedSuperCatName, $"{subCategories.Count} items", (Action)(() => {
                     ShowFilterList(localizedSuperCatName, subCategories, data, false, true);
-                }));
+                })));
             }
         }
         
@@ -1777,17 +1813,17 @@ public static class FilterManagerWindow
         var otherCategories = allSearchableItems?.Where(x => x.CategoryPath == ItemFilterPlusTranslations.Get("Other Categories")).ToList() ?? new List<SearchableFilterItem>();
         if (otherCategories.Count > 0)
         {
-            superCategoryList.Add((ItemFilterPlusTranslations.Get("Other Categories"), $"{otherCategories.Count} items", () => {
+            superCategoryList.Add(Tuple.Create(ItemFilterPlusTranslations.Get("Other Categories"), $"{otherCategories.Count} items", (Action)(() => {
                 ShowFilterList(ItemFilterPlusTranslations.Get("Other Categories"), otherCategories, data, false, true);
-            }));
+            })));
         }
         
         layer.SetStringList(
-            () => superCategoryList.Select(c => c.name).ToList(),
+            () => superCategoryList.Select(c => c.Item1).ToList(),
             (index, name) => {
                 if (index >= 0 && index < superCategoryList.Count)
                 {
-                    superCategoryList[index].action();
+                    superCategoryList[index].Item3();
                 }
             },
             autoClose: true
